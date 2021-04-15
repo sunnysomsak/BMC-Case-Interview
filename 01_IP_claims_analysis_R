@@ -1,0 +1,183 @@
+########################################
+#  Analyzing Inpatient Claims Data     # 
+#  By: KS                              #
+#  Created 4/14/2021 by KS             #
+#  Last Updated 4/15/2021 by KS        #
+########################################
+
+# Reset environment -----------------------------------------------------
+dapg::reset_session()
+
+header <- dapg::source_header()
+
+library(readr)
+----------------------------------------------------------------------------
+  
+###################
+# Import Database # 
+###################
+
+ip_claims <- read.xlsx(header$datasets("mst/sca/identified_matches/_archive/ip_claims.xlsx"))
+aco_roster <- read.xlsx(header$datasets("mst/sca/identified_matches/_archive/aco_roster.xlsx"))
+
+############
+# Analysis # 
+############
+
+# Data Processing -------------------------------------------------------------------
+
+#Merge on ACO roster information using member ID, then restrict to members.
+claims_merged <- merge(x = ip_claims, y = aco_roster, by = "Member.ID", all.x = TRUE) %>% na.omit()
+
+# Inpatient Stays Analysis -------------------------------------------------------------------
+
+#Breakdown stays by discharge facility
+facility1 <- claims_merged %>% 
+  group_by(Discharge.facility) %>% 
+  summarise(n = n())
+
+facility2 <- claims_merged %>%
+  group_by(Discharge.facility) %>%
+  summarise_at(vars(Paid.Amount), funs(mean(., na.rm=TRUE)))
+
+claims_facility <- cbind(claims = facility1, average.paid = facility2$Paid.Amount) %>%
+  arrange(desc(claims.n))
+rm(facility1,facility2)
+
+#T-test BMC's paid amount versus overall average
+t.test(claims_merged$Paid.Amount, 
+       y = subset(filter(claims_merged,Discharge.facility == "BOSTON MEDICAL CENTER CORPORATION"), 
+       select = c(Paid.Amount)))
+
+#Breakdown stays by discharge facility type
+facility_type1 <- claims_merged %>% 
+  group_by(Discharge.facility.type) %>% 
+  summarise(n = n())
+
+facility_type2 <- claims_merged %>%
+  group_by(Discharge.facility.type) %>%
+  summarise_at(vars(Paid.Amount), funs(mean(., na.rm=TRUE)))
+
+claims_facility_type <- cbind(claims = facility_type1, average.paid = facility_type2$Paid.Amount)
+  rm(facility_type1,facility_type2)
+
+#Breakdown stays by admission diagnosis group
+diagnosis1 <- claims_merged %>% 
+  group_by(Admission.Diagnosis.Group) %>% 
+  summarise(n = n())
+
+diagnosis2 <- claims_merged %>%
+  group_by(Admission.Diagnosis.Group) %>%
+  summarise_at(vars(Paid.Amount), funs(mean(., na.rm=TRUE)))
+
+claims_diagnosis <- cbind(claims = diagnosis1, average.paid = diagnosis2$Paid.Amount) %>%
+  arrange(desc(average.paid*claims.n))
+rm(diagnosis1,diagnosis2)
+
+#Breakdown stay duration
+claims_merged$stay.duration <- month(claims_merged$Discharge.Date - claims_merged$Admission.Date)
+
+claims_merged$duration.bins <- ifelse(claims_merged$stay.duration == 0, "0", 
+                                      ifelse(claims_merged$stay.duration == 1, "1",
+                                      ifelse(claims_merged$stay.duration > 1 
+                                        & claims_merged$stay.duration <= 5, "2-5",
+                                      ifelse(claims_merged$stay.duration > 6 
+                                        & claims_merged$stay.duration <= 10, "6-10",
+                                      ifelse(claims_merged$stay.duration > 11 
+                                        & claims_merged$stay.duration <= 100, "11-100", ">100")))))
+
+stay_duration1 <- claims_merged %>% 
+  group_by(duration.bins) %>% 
+  summarise(n = n())
+
+stay_duration2 <- claims_merged %>%
+  group_by(duration.bins) %>%
+  summarise_at(vars(Paid.Amount), funs(mean(., na.rm=TRUE)))
+
+claims_stay_duration <- cbind(claims = stay_duration1, average.paid = stay_duration2$Paid.Amount) %>%
+  arrange(desc(average.paid))
+rm(stay_duration1,stay_duration2)
+
+#Breakdown admission month
+claims_merged$admission.month <- month(claims_merged$Admission.Date)
+
+#Convert date variables from numeric format
+claims_merged$Admission.Date <- as.Date(claims_merged$Admission.Date, origin="1899-12-30")
+claims_merged$Discharge.Date <- as.Date(claims_merged$Discharge.Date, origin="1899-12-30")
+
+admission_month1 <- claims_merged %>% 
+  group_by(admission.month) %>% 
+  summarise(n = n())
+
+admission_month2 <- claims_merged %>%
+  group_by(admission.month) %>%
+  summarise_at(vars(Paid.Amount), funs(mean(., na.rm=TRUE)))
+
+claims_admission_month <- cbind(claims = admission_month1, average.paid = admission_month2$Paid.Amount)
+rm(admission_month1,admission_month2)
+
+hist(claims_merged$admission.month)
+
+# ACO members analysis -------------------------------------------------------------------
+
+#Breakdown by primary care site
+
+members_primary_care <- aco_roster %>% 
+  group_by(Primary.Care.Site) %>% 
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+#Breakdown by gender
+ 
+members_sex <- aco_roster %>% 
+  group_by(Sex) %>% 
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+#Breakdown by race
+
+members_race <- aco_roster %>% 
+  group_by(Race) %>% 
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+#Breakdown by disability
+
+members_disabled <- aco_roster %>% 
+  group_by(Disabled) %>% 
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+#Breakdown by age
+
+age_chart <- hist(aco_roster$Age)
+
+# Calculate readmission rate -------------------------------------------------------------------
+
+#Sort by member ID and date, then flag subsequent visits
+readmission <- claims_merged %>% 
+  subset(select = c(Member.ID,Admission.Date,Discharge.Date,stay.duration)) %>%
+  arrange(desc(Admission.Date)) %>%
+  arrange(desc(Member.ID)) %>% 
+  mutate(same.id = ifelse(Member.ID == lead(Member.ID),1,0))
+
+#Calculate gap between last discharge and admission
+readmission$admission.gap <- ifelse(
+  readmission$same.id == 1,
+  abs(lead(readmission$Discharge.Date)-readmission$Admission.Date),NA)
+
+#Flag for readmission
+readmission$readmission.flag <- ifelse(
+  readmission$admission.gap <= 30, 1, NA)
+
+readmission.rate <- sum(readmission$readmission.flag, na.rm = TRUE)/nrow(readmission)
+
+----------------------------------------------------------------------------
+  
+###################
+# Export to Excel # 
+###################
+
+write.xlsx(claims_admiss, 
+  header$export("sca_matching/analyses/07r_matching_sec_actions_by_fy.xlsx"), 
+  sheetName="matching_sec_actions_by_fy")
