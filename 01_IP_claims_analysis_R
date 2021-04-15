@@ -173,11 +173,3 @@ readmission$readmission.flag <- ifelse(
 readmission.rate <- sum(readmission$readmission.flag, na.rm = TRUE)/nrow(readmission)
 
 ----------------------------------------------------------------------------
-  
-###################
-# Export to Excel # 
-###################
-
-write.xlsx(claims_admiss, 
-  header$export("sca_matching/analyses/07r_matching_sec_actions_by_fy.xlsx"), 
-  sheetName="matching_sec_actions_by_fy")
